@@ -1,0 +1,135 @@
+- name: Налаштування APP_VM (PetClinic)
+  hosts: all
+  become: true
+
+  vars:
+    app_user: appuser
+    project_dir: /home/appuser/petclinic
+    app_dir: /home/appuser
+    clone_dir: /tmp/petclinic-clone
+    petclinic_dir: /home/appuser/petclinic/forStep1/PetClinic
+    repo_url: "git@gitlab.com:dan-it/groups/devops_soft.git"
+
+  tasks:
+    - name: Встановити acl (потрібен для переходу на непривілейованого користувача)
+      ansible.builtin.apt:
+        name: acl
+        state: present
+        update_cache: true
+
+    - name: Створити нерутового користувача APP_USER
+      ansible.builtin.user:
+        name: "{{ app_user }}"
+        shell: /bin/bash
+        create_home: true
+
+    - name: Встановити JDK 8, Git та залежності
+      ansible.builtin.apt:
+        name:
+          - openjdk-8-jdk
+          - git
+          - mysql-client
+        state: present
+        update_cache: true
+
+    - name: Додати gitlab.com у known_hosts (vagrant)
+      become: false
+      ansible.builtin.known_hosts:
+        name: gitlab.com
+        key: "{{ lookup('pipe', 'ssh-keyscan gitlab.com') }}"
+        path: ~/.ssh/known_hosts
+
+    - name: Клонувати репозиторій PetClinic у тимчасову теку
+      become: false
+      ansible.builtin.git:
+        repo: "{{ repo_url }}"
+        dest: "{{ clone_dir }}"
+        version: main
+
+    - name: Скопіювати репозиторій у домашню теку APP_USER
+      ansible.builtin.copy:
+        src: "{{ clone_dir }}/"
+        dest: "{{ project_dir }}"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        remote_src: true
+
+    - name: Прибрати тимчасову теку clone
+      ansible.builtin.file:
+        path: "{{ clone_dir }}"
+        state: absent
+
+    - name: Зробити mvnw виконуваним
+      ansible.builtin.file:
+        path: "{{ petclinic_dir }}/mvnw"
+        mode: "0755"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+
+    - name: Зібрати застосунок через Maven Wrapper (тести + package)
+      ansible.builtin.command:
+        cmd: "{{ petclinic_dir }}/mvnw test package"
+        chdir: "{{ petclinic_dir }}"
+      become_user: "{{ app_user }}"
+
+    - name: Знайти зібраний JAR
+      ansible.builtin.find:
+        paths: "{{ petclinic_dir }}/target"
+        patterns: "*.jar"
+      register: jar_files
+
+    - name: Скопіювати JAR у домашню теку APP_USER
+      ansible.builtin.copy:
+        src: "{{ jar_files.files[0].path }}"
+        dest: "{{ app_dir }}/petclinic.jar"
+        remote_src: true
+        owner: "{{ app_user }}"
+
+    - name: Створити теку для конфігу секретів
+      ansible.builtin.file:
+        path: /etc/petclinic
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Створити EnvironmentFile із креденшіалами БД
+      ansible.builtin.copy:
+        dest: /etc/petclinic/db.env
+        owner: root
+        group: "{{ app_user }}"
+        mode: "0640"
+        content: |
+          SPRING_PROFILES_ACTIVE=mysql
+          SPRING_DATASOURCE_URL=jdbc:mysql://{{ db_host }}:{{ db_port }}/{{ db_name }}
+          SPRING_DATASOURCE_USERNAME={{ db_user }}
+          SPRING_DATASOURCE_PASSWORD={{ db_pass }}
+
+    - name: Створити systemd unit для PetClinic
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/petclinic.service
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Spring PetClinic Application
+          After=network.target
+
+          [Service]
+          User={{ app_user }}
+          WorkingDirectory={{ app_dir }}
+          EnvironmentFile=/etc/petclinic/db.env
+          ExecStart=/usr/bin/java -jar {{ app_dir }}/petclinic.jar
+          Restart=always
+          RestartSec=10
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Запустити й увімкнути сервіс PetClinic
+      ansible.builtin.systemd:
+        name: petclinic
+        state: restarted
+        enabled: true
+        daemon_reload: true

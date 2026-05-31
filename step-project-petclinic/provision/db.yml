@@ -1,0 +1,46 @@
+- name: Налаштування DB_VM (MySQL)
+  hosts: all
+  become: true
+
+  tasks:
+    - name: Встановити MySQL-сервер і PyMySQL
+      ansible.builtin.apt:
+        name:
+          - mysql-server
+          - python3-pymysql
+        state: present
+        update_cache: true
+
+    - name: MySQL слухає приватний інтерфейс (не лише localhost)
+      ansible.builtin.lineinfile:
+        path: /etc/mysql/mysql.conf.d/mysqld.cnf
+        regexp: '^bind-address'
+        line: 'bind-address = 0.0.0.0'
+      notify: restart mysql
+
+    - name: Запустити й увімкнути MySQL
+      ansible.builtin.service:
+        name: mysql
+        state: started
+        enabled: true
+
+    - name: Створити базу даних
+      community.mysql.mysql_db:
+        name: "{{ db_name }}"
+        state: present
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+
+    - name: Створити користувача з доступом лише з приватної підмережі
+      community.mysql.mysql_user:
+        name: "{{ db_user }}"
+        password: "{{ db_pass }}"
+        host: "{{ db_subnet }}"
+        priv: "{{ db_name }}.*:ALL"
+        state: present
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+
+  handlers:
+    - name: restart mysql
+      ansible.builtin.service:
+        name: mysql
+        state: restarted

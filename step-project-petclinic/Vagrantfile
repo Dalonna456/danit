@@ -1,0 +1,48 @@
+Vagrant.configure("2") do |config|
+  config.vm.box = "ubuntu/jammy64"
+
+  # ===== DB_VM — база даних =====
+  config.vm.define "db_vm" do |db|
+    db.vm.hostname = "db-vm"
+    db.vm.network "private_network", ip: "192.168.56.20"
+
+    db.vm.provider "virtualbox" do |vb|
+      vb.memory = 1024
+      vb.cpus = 1
+    end
+
+    # Provisioning через Ansible
+    db.vm.provision "ansible" do |ansible|
+      ansible.playbook = "provision/db.yml"
+      ansible.extra_vars = {
+        db_name: ENV['DB_NAME'],
+        db_user: ENV['DB_USER'],
+        db_pass: ENV['DB_PASS'],
+        db_subnet: "192.168.56.%"
+      }
+    end
+   end
+# ===== APP_VM — застосунок PetClinic =====
+  config.vm.define "app_vm" do |app|
+    app.ssh.forward_agent = true
+    app.vm.hostname = "app-vm"
+    app.vm.network "private_network", ip: "192.168.56.10"
+    app.vm.network "forwarded_port", guest: 8080, host: 8080
+
+    app.vm.provider "virtualbox" do |vb|
+      vb.memory = 2048
+      vb.cpus = 2
+    end
+
+    app.vm.provision "ansible" do |ansible|
+      ansible.playbook = "provision/app.yml"
+      ansible.extra_vars = {
+        db_host: "192.168.56.20",
+        db_port: "3306",
+        db_name: ENV['DB_NAME'],
+        db_user: ENV['DB_USER'],
+        db_pass: ENV['DB_PASS']
+      }
+    end
+  end
+ end
